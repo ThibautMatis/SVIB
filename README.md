@@ -1,15 +1,9 @@
-# SVIB v2 — prototype de recherche (non diagnostique)
+# SVIB V3 — prototype de recherche
 
-## Installation sur GitHub Pages
-Déposer les fichiers `index.html`, `style.css`, `app.js` à la racine du dépôt `SVIB`. Ajouter également le fichier **exact** `BRCA2_NM_000059.4.fasta` téléchargé depuis NCBI (NM_000059.4, 11954 nucléotides) à la racine. Le chargement de la référence est automatique après rechargement du site. Si le fichier est absent, l’import manuel reste possible.
+Application statique pour GitHub Pages. Remplacer `index.html`, `style.css`, `app.js` à la racine du dépôt SVIB. Aucun FASTA à héberger.
 
-Le champ CDS doit être renseigné d’après les annotations CDS de l’enregistrement GenBank de la même version ; ne pas inférer l’ATG en recherchant le premier ATG de la séquence. Les substitutions affichées restent indicatives.
+Rechercher un symbole de gène humain, choisir un NM_ versionné, puis charger sa référence NCBI (séquence + annotation CDS). Possibilité de saisir directement un accession.version. La recherche NCBI est limitée à 200 résultats ; elle ne garantit pas une liste exhaustive de toutes les versions historiques. La récupération dépend du réseau, de CORS et de la disponibilité de NCBI ; un FASTA manuel reste possible sans annotation CDS automatique.
 
-## Navigation
-Glisser horizontalement le chromatogramme ; double-cliquer pour zoomer ; bouton Dézoomer ou Vue complète ; molette pour ajuster. Cliquer sur une base pour ses coordonnées approximatives.
+Les fichiers AB1 sont lus localement ; seules les références publiques sont demandées à NCBI. Les requêtes de référence peuvent révéler le gène/transcrit recherché au fournisseur réseau/NCBI. Aucun fichier patient ne doit être ajouté au dépôt GitHub.
 
-## Recherche d’indels
-Le bouton « Rechercher des régions candidates » effectue un **classement heuristique exploratoire**, sur les intensités des pics et des décalages de quatre bases, indépendamment pour chaque orientation. Les positions ne sont **pas** des appels d’indels ni des nomenclatures HGVS ; la déconvolution complète des deux allèles et la validation analytique ne sont pas implémentées. Les scores ne sont pas des probabilités.
-
-## Confidentialité
-Les fichiers .ab1 sont lus dans le navigateur, sans upload programmé. Le FASTA public est téléchargé depuis le même site GitHub Pages. Ne jamais committer de fichiers patients dans le dépôt public. Pour des données cliniques, auditer le code, les dépendances et l’environnement avant utilisation.
+**Limitations :** alignement heuristique et discordances SNV indicatives ; les délétions hétérozygotes ne sont pas appelées ni normalisées en HGVS. Le module indel explore des régions candidates uniquement. Le calcul c. des SNV est limité aux positions de CDS et reste indicatif. Pas de validation clinique ni de garantie de sécurité pour données patient.

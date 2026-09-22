@@ -21,18 +21,73 @@ function parseABI(buffer){
  let quality=[];try{quality=numbers('PCON',2)}catch(e){};
  return {bases,positions,traces,quality,order};
 }
-function fasta(text){let lines=text.trim().split(/\r?\n/);let header=lines.find(x=>x.startsWith('>'))||'';let seq=lines.filter(x=>!x.startsWith('>')).join('').replace(/\s/g,'').toUpperCase().replace(/U/g,'T');if(!seq||!/^[ACGTN]+$/.test(seq))throw Error('FASTA invalide (séquence ADN attendue)');if(!header.includes('NM_000059.4'))throw Error('En-tête FASTA : NM_000059.4 attendu. Vérifiez la version de référence.');return {seq,header}}
-$('loadref').onclick=async()=>{try{let file=$('fasta').files[0];let text=file?await file.text():$('refpaste').value;state.ref=fasta(text);$('refstatus').textContent=`Référence chargée : ${state.ref.header}\n${state.ref.seq.length} nucléotides.`}catch(e){state.ref=null;$('refstatus').textContent='Erreur : '+e.message}};
-// Référence statique servie par GitHub Pages : seuls les octets publics du FASTA sont téléchargés.
-// Aucun chromatogramme n'est transmis au serveur.
-(async function autoReference(){try{
- const response=await fetch('./BRCA2_NM_000059.4.fasta',{cache:'no-store'});
- if(!response.ok)throw Error('Fichier de référence absent du dépôt (HTTP '+response.status+')');
- const loaded=fasta(await response.text());
- if(loaded.seq.length!==11954)throw Error('Longueur inattendue : '+loaded.seq.length+' (11954 attendus)');
- state.ref=loaded; $('refstatus').textContent='Référence BRCA2 NM_000059.4 intégrée : '+loaded.seq.length+' nucléotides. Aucune donnée patient envoyée.';
- }catch(e){$('refstatus').textContent='Référence intégrée indisponible : '+e.message+' — chargez votre FASTA manuellement.'}
-})();
+// Recherche publique NCBI : aucune séquence de patient, chromatogramme ou variant n'entre dans ces URL.
+const API='https://eutils.ncbi.nlm.nih.gov/entrez/eutils/';
+let refRequest=0;
+async function ncbi(endpoint,params){
+ const url=new URL(API+endpoint);for(const [k,v] of Object.entries(params))url.searchParams.set(k,String(v));
+ const response=await fetch(url,{mode:'cors',cache:'no-store',credentials:'omit',referrerPolicy:'no-referrer'});
+ if(!response.ok)throw Error('NCBI HTTP '+response.status);
+ const body=await response.text();if(body.length>8e6)throw Error('Réponse NCBI trop volumineuse');
+ if(body.trim().startsWith('<!DOCTYPE html'))throw Error('NCBI a renvoyé une page HTML');return body;
+}
+function xml(text){const doc=new DOMParser().parseFromString(text,'application/xml');if(doc.querySelector('parsererror'))throw Error('XML NCBI invalide');return doc}
+function tagText(node,name){return node?.getElementsByTagName(name)[0]?.textContent?.trim()||''}
+function fasta(text){
+ const lines=text.replace(/^\uFEFF/,'').trim().split(/\r?\n/);const header=lines[0]||'';
+ if(!header.startsWith('>'))throw Error('En-tête FASTA absent');
+ const seq=lines.slice(1).join('').replace(/\s/g,'').toUpperCase();
+ if(!seq||!/^[ACGTN]+$/.test(seq))throw Error('FASTA invalide : nucléotides A/C/G/T/N attendus');
+ const accession=header.match(/^>(NM_\d+\.\d+)\b/)?.[1];
+ if(!accession)throw Error('Accession NM_ versionnée absente de l’en-tête FASTA');
+ return {seq,header,accession,cdsStart:null,cdsEnd:null};
+}
+function setReference(ref){
+ if(!ref?.seq||!/^NM_\d+\.\d+$/.test(ref.accession))throw Error('Référence NM_ invalide');
+ state.ref=ref;$('cdsstart').value=ref.cdsStart||'';
+ $('refstatus').textContent=`Référence chargée : ${ref.accession} · ${ref.seq.length} nt · CDS ${ref.cdsStart&&ref.cdsEnd?ref.cdsStart+'–'+ref.cdsEnd:'non documentée'} · source ${ref.source||'FASTA manuel'}. Relancez l’analyse ABI pour mettre à jour les alignements.`;
+}
+$('loadref').onclick=async()=>{try{const file=$('fasta').files[0],text=file?await file.text():$('refpaste').value;setReference(fasta(text))}catch(e){$('refstatus').textContent='Erreur : '+e.message}};
+$('searchgene').onclick=async()=>{
+ const gene=$('gene').value.trim().toUpperCase(),select=$('transcripts');
+ if(!/^[A-Z0-9][A-Z0-9.-]{0,29}$/.test(gene)){$('refstatus').textContent='Symbole de gène invalide';return}
+ select.replaceChildren();$('refstatus').textContent='Recherche des transcrits RefSeq de '+gene+'…';
+ try{
+ const term=`${gene}[Gene] AND Homo sapiens[Organism] AND biomol_mrna[PROP] AND refseq[filter]`;
+ const search=JSON.parse(await ncbi('esearch.fcgi',{db:'nuccore',term,retmode:'json',retmax:200})).esearchresult;
+ const ids=search?.idlist||[];if(!ids.length)throw Error('Aucun résultat NCBI pour ce gène');
+ const summary=JSON.parse(await ncbi('esummary.fcgi',{db:'nuccore',id:ids.join(','),retmode:'json'})).result;
+ const found=new Map();for(const id of summary.uids||[]){const item=summary[id],acc=item?.accessionversion||'';
+ if(/^NM_\d+\.\d+$/.test(acc)&&!found.has(acc))found.set(acc,item.title||'Transcrit RefSeq');}
+ for(const [acc,title] of found){const option=document.createElement('option');option.value=acc;option.textContent=acc+' — '+title.slice(0,100);select.append(option)}
+ if(!found.size)throw Error('Aucun NM_ dans les résultats (essayez l’accession directe)');
+ $('refstatus').textContent=found.size+' transcrit(s) NM_ trouvé(s) pour '+gene+'. Sélectionnez une version puis cliquez sur Charger.'+(Number(search.count)>200?' Liste limitée aux 200 premiers résultats.':'');
+ }catch(e){$('refstatus').textContent='Recherche impossible : '+e.message+'. Essayez une accession directe ou un FASTA manuel.'}
+};
+async function fetchTranscript(accession){
+ if(!/^NM_\d+\.\d+$/.test(accession))throw Error('Saisissez un NM_ avec son numéro de version (ex. NM_000059.4)');
+ const request=++refRequest;$('refstatus').textContent='Téléchargement de '+accession+' et de ses annotations CDS…';
+ const document=xml(await ncbi('efetch.fcgi',{db:'nuccore',id:accession,rettype:'gb',retmode:'xml'}));
+ const record=document.getElementsByTagName('GBSeq')[0];if(!record)throw Error('Enregistrement GenBank absent');
+ const returned=tagText(record,'GBSeq_accession-version');if(returned!==accession)throw Error('NCBI a retourné '+returned+' au lieu de '+accession);
+ const seq=tagText(record,'GBSeq_sequence').toUpperCase();if(!/^[ACGTN]+$/.test(seq))throw Error('Séquence NCBI invalide');
+ let cdsStart=null,cdsEnd=null;
+ for(const feature of record.getElementsByTagName('GBFeature')){
+ if(tagText(feature,'GBFeature_key')!=='CDS')continue;
+ const intervals=Array.from(feature.getElementsByTagName('GBInterval'));
+ const starts=intervals.map(i=>Number(tagText(i,'GBInterval_from')||tagText(i,'GBInterval_point')));
+ const ends=intervals.map(i=>Number(tagText(i,'GBInterval_to')||tagText(i,'GBInterval_point')));
+ if(starts.length&&starts.every(Number.isInteger)&&ends.every(Number.isInteger)){
+  const start=Math.min(...starts),end=Math.max(...ends);
+  if(start>=1&&end<=seq.length&&seq.slice(start-1,start+2)==='ATG'){cdsStart=start;cdsEnd=end;break}
+ }
+ }
+ if(request!==refRequest)return;
+ setReference({seq,header:'>'+returned,accession:returned,cdsStart,cdsEnd,source:'NCBI RefSeq'});
+ if(!cdsStart)$('refstatus').textContent+=' Annotation CDS non résolue : aucun HGVS c. calculé.';
+}
+$('loadtranscript').onclick=()=>fetchTranscript($('transcripts').value).catch(e=>$('refstatus').textContent='Chargement impossible : '+e.message);
+$('loadaccession').onclick=()=>fetchTranscript($('accession').value.trim().toUpperCase()).catch(e=>$('refstatus').textContent='Chargement impossible : '+e.message);
 // Banded-free Smith-Waterman local alignment with traceback. Limit read/reference size to bound runtime.
 function align(read,ref){const n=read.length,m=ref.length;if(n>3000||m>25000)throw Error('Référence/lecture trop longue pour cet alignement de démonstration');
  let w=m+1,H=new Int32Array((n+1)*w),T=new Uint8Array(H.length),best=0,bi=0,bj=0;
@@ -41,7 +96,7 @@ function align(read,ref){const n=read.length,m=ref.length;if(n>3000||m>25000)thr
 function chooseAlignment(read,ref){let a=align(read,ref),b=align(rc(read),ref);return b.score>a.score?{...b,strand:'-',oriented:rc(read),length:read.length}:{...a,strand:'+',oriented:read,length:read.length}}
 function cpos(refZero,cds){let x=refZero+1;if(!cds||cds<1)return 'non défini';let d=x-cds+1;return d>0?'c.'+d:'c.'+d}
 function callRows(read){let a=read.alignment,cds=Number($('cdsstart').value),rows=[];for(let k=0;k<a.cols.length;k++){let col=a.cols[k];if(col.q===null||col.r===null||col.base===col.ref||!/[ACGT]/.test(col.base)||!/[ACGT]/.test(col.ref))continue;
- let qOriginal=a.strand==='+'?col.q:a.length-1-col.q;let label=Number.isInteger(cds)&&cds>0?`NM_000059.4:${cpos(col.r,cds)}${col.ref}>${col.base}`:'CDS non renseignée';
+ let qOriginal=a.strand==='+'?col.q:a.length-1-col.q;let label=Number.isInteger(cds)&&cds>0&&state.ref?.cdsStart===cds&&col.r+1>=cds&&col.r+1<=state.ref.cdsEnd?`${state.ref.accession}:${cpos(col.r,cds)}${col.ref}>${col.base} (indicatif)`:'CDS non vérifiée / hors CDS';
  rows.push({name:read.name,q:qOriginal+1,r:col.r+1,ref:col.ref,alt:col.base,hgvs:label,read})}return rows}
 $('analyze').onclick=async()=>{state.reads=[];state.rows=[];$('variants').replaceChildren();$('alignments').replaceChildren();$('readselect').replaceChildren();try{
  for(let [id,name] of [['forward','Forward'],['reverse','Reverse']]){let f=$(id).files[0];if(!f)continue;let ab=parseABI(await f.arrayBuffer());let read={...ab,name:name+' · '+f.name};if(state.ref){read.alignment=chooseAlignment(ab.bases,state.ref.seq);state.rows.push(...callRows(read))}state.reads.push(read)}if(!state.reads.length)throw Error('Importez au moins un fichier ABI');
@@ -93,7 +148,7 @@ function candidateScore(read,breakQ,shift){
 }
 $('scanindel').onclick=()=>{
  const out=$('indelrows');out.replaceChildren();
- if(!state.ref){$('indelstatus').textContent='Chargez la référence BRCA2 avant la recherche.';return}
+ if(!state.ref){$('indelstatus').textContent='Chargez un transcrit NM_ avant la recherche.';return}
  let all=[];
  for(const read of state.reads){
   const a=read.alignment;if(!a)continue;
