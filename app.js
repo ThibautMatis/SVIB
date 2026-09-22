@@ -120,64 +120,90 @@ trace.addEventListener('wheel',e=>{e.preventDefault();let v=state.view;if(!v)ret
 $('draw').onclick=draw;$('readselect').onchange=draw;$('trace').onclick=e=>{if(state.suppressClick)return;let v=state.view;if(!v)return;let rect=$('trace').getBoundingClientRect(),sample=v.x0+(e.clientX-rect.left)/rect.width*(v.x1-v.x0),k=v.start;for(let i=v.start;i<v.end;i++)if(Math.abs(v.r.positions[i]-sample)<Math.abs(v.r.positions[k]-sample))k=i;let a=v.r.alignment,ref='non alignée';if(a){let q=a.strand==='+'?k:a.length-1-k;let c=a.cols.find(c=>c.q===q&&c.r!==null);if(c)ref=`référence ${c.r+1} ; ${cpos(c.r,Number($('cdsstart').value))}`} $('baseinfo').textContent=`${v.r.name} · base ABI ${k+1} : ${v.r.bases[k]} · ${ref}`};
 $('export').onclick=()=>{let header=['lecture','position_ABI','position_reference_1based','reference','observe','HGVS_indicatif'];let esc=v=>'"'+String(v).replace(/"/g,'""')+'"';let data=[header,...state.rows.map(r=>[r.name,r.q,r.r,r.ref,r.alt,r.hgvs])].map(row=>row.map(esc).join(',')).join('\r\n');let blob=new Blob(['\ufeff'+data],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='sangervariant_discordances_indicatives.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
 
-// Score heuristique : recherche d'une augmentation des signaux secondaires compatibles
-// avec une superposition de la référence WT et d'une référence décalée de 4 bases.
-// Le score ne constitue pas une probabilité, un génotype ou une validation d'indel.
-function candidateScore(read,breakQ,shift){
- const a=read.alignment,ref=state.ref.seq,points=[];
- const qmap=new Map(a.cols.filter(c=>c.q!==null&&c.r!==null).map(c=>[c.q,c.r]));
- for(let q=breakQ+2;q<Math.min(breakQ+28,a.oriented.length-2);q++){
-   const r=qmap.get(q);if(r===undefined||r+shift<0||r+shift>=ref.length)continue;
-   const original=a.strand==='+'?q:a.length-1-q;
-   const pos=read.positions[original];if(!Number.isInteger(pos)||pos<0)continue;
-   const observed={};let total=0;
-   for(let base of 'ACGT'){
-     const v=read.traces[base][pos]||0;observed[base]=v;total+=v;
-   }
-   if(total<=0)continue;
-   const wt=ref[r],del=ref[r+shift];if(!'ACGT'.includes(wt)||!'ACGT'.includes(del)||wt===del)continue;
-   const expected=a.strand==='+'?del:rc(del);
-   const normal=a.strand==='+'?wt:rc(wt);
-   const mixed=observed[expected]/total;
-   const primary=observed[normal]/total;
-   points.push({mixed,primary});
- }
- if(points.length<8)return null;
- return {score:points.reduce((s,x)=>s+x.mixed,0)/points.length,
-   primary:points.reduce((s,x)=>s+x.primary,0)/points.length,n:points.length};
+
+// V4: heuristic 4-nt deletion signal comparison, entirely within the browser.
+// This is NOT validated variant calling: local alignment can be wrong after a heterozygous indel.
+const BASES='ACGT';
+function peakFractions(read, orientedQ){
+ const a=read.alignment,original=a.strand==='+'?orientedQ:a.length-1-orientedQ;
+ const pos=read.positions[original];if(!Number.isInteger(pos)||pos<0||pos>=read.traces.A.length)return null;
+ const values=BASES.map(b=>Math.max(0,read.traces[b][pos]||0));
+ const total=values.reduce((x,y)=>x+y,0);if(total<20)return null;
+ return values.map(v=>v/total);
 }
+function baseChannel(base,strand){return BASES.indexOf(strand==='+'?base:rc(base))}
+function expectedError(observed,wt,deleted,strand,mix){
+ const i=baseChannel(wt,strand),j=baseChannel(deleted,strand);
+ if(i<0||j<0)return null;
+ // Compare relative peak proportions, allowing a small background at other channels.
+ const exp=[.025,.025,.025,.025];
+ exp[i]+=.9*(1-mix);exp[j]+=.9*mix;
+ return exp.reduce((sum,e,k)=>sum+(observed[k]-e)**2,0);
+}
+function modelAt(read,breakQ,breakR){
+ const a=read.alignment,ref=state.ref.seq;
+ if(breakQ<16||breakQ+24>=a.length||breakR<16||breakR+28>=ref.length)return null;
+ let preWt=0,preMixed=0,postWt=0,postBest=Infinity,postN=0,preN=0,bestMix=null;
+ const post=[];
+ for(let d=-12;d<=23;d++){
+  if(d>=-1&&d<=1)continue; // transition/phase uncertainty
+  const q=breakQ+d,r=breakR+d,observed=peakFractions(read,q);
+  if(!observed||!BASES.includes(ref[r])||!BASES.includes(ref[r+4]))continue;
+  const wt=expectedError(observed,ref[r],ref[r],a.strand,0);
+  if(d<0){preWt+=wt;preMixed+=expectedError(observed,ref[r],ref[r+4],a.strand,.5);preN++}
+  else {post.push({observed,wt:ref[r],del:ref[r+4]});postWt+=wt;postN++}
+ }
+ if(preN<7||postN<12)return null;
+ for(let mix=.15;mix<=.851;mix+=.05){
+  const error=post.reduce((sum,p)=>sum+expectedError(p.observed,p.wt,p.del,a.strand,mix),0);
+  if(error<postBest){postBest=error;bestMix=mix}
+ }
+ const gain=(postWt-postBest)/postN;
+ const preError=preWt/preN;
+ // Require improved fit after breakpoint, not merely globally noisy data.
+ if(gain<.025||postBest/postN>=postWt/postN*.82||preError>.40)return null;
+ return {gain,preError,postError:postBest/postN,mix:bestMix,preN,postN};
+}
+let indelCandidates=[];
 $('scanindel').onclick=()=>{
- const out=$('indelrows');out.replaceChildren();
- if(!state.ref){$('indelstatus').textContent='Chargez un transcrit NM_ avant la recherche.';return}
- let all=[];
+ const out=$('indelrows');out.replaceChildren();indelCandidates=[];
+ if(!state.ref){$('indelstatus').textContent='Chargez d’abord un transcrit RefSeq.';return}
  for(const read of state.reads){
   const a=read.alignment;if(!a)continue;
-  const candidates=[];
-  for(let q=Math.max(a.start+12,15);q<Math.min(a.end-32,a.length-32);q+=2){
-   const r=a.cols.find(c=>c.q===q&&c.r!==null)?.r;
-   if(r===undefined)continue;
-   // Les deux sens sont évalués : un indel hétérozygote peut être ambigu
-   // en présence de pics mixtes et d'un alignement déjà dégradé.
-   for(const shift of [-4,4]){
-    const result=candidateScore(read,q,shift);
-    if(result)candidates.push({read,q,r,shift,...result});
-   }
+  const map=new Map(a.cols.filter(c=>c.q!==null&&c.r!==null).map(c=>[c.q,c.r]));
+  const scored=[];
+  for(let q=Math.max(a.start+16,16);q<Math.min(a.end-27,a.length-27);q+=2){
+   const r=map.get(q);if(r===undefined)continue;
+   // Require a well-aligned pre-break anchor (not an arbitrary post-indel offset).
+   let anchor=0;for(let d=-9;d<=-2;d++)if(map.get(q+d)===r+d)anchor++;
+   if(anchor<5)continue;
+   const model=modelAt(read,q,r);if(model)scored.push({read,q,r,...model});
   }
-  candidates.sort((x,y)=>y.score-x.score);
-  // Regrouper les maxima proches : ne pas afficher dix positions contiguës.
-  let chosen=[];
-  for(const item of candidates){if(chosen.every(x=>Math.abs(x.q-item.q)>14)){chosen.push(item);if(chosen.length>=5)break}}
-  all.push(...chosen);
+  scored.sort((x,y)=>y.gain-x.gain);
+  const chosen=[];
+  for(const candidate of scored){
+   if(chosen.every(c=>Math.abs(c.r-candidate.r)>12)){chosen.push(candidate);if(chosen.length>=6)break}
+  }
+  indelCandidates.push(...chosen);
  }
- all.sort((x,y)=>y.score-x.score);
- for(const item of all){
+ indelCandidates.sort((x,y)=>y.gain-x.gain);
+ for(const candidate of indelCandidates){
+  const other=indelCandidates.filter(c=>c.read!==candidate.read&&Math.abs(c.r-candidate.r)<=12);
+  const original=candidate.read.alignment.strand==='+'?candidate.q+1:candidate.read.bases.length-candidate.q;
   const tr=document.createElement('tr');
-  const original=item.read.alignment.strand==='+'?item.q+1:item.read.bases.length-item.q;
-  for(const val of [item.read.name,original,item.r+1,'Décalage '+(item.shift>0?'+':'')+item.shift+' bases (hypothèse)',item.score.toFixed(3)+' (n='+item.n+')']){
-   const td=document.createElement('td');td.textContent=val;tr.append(td)
-  }
-  tr.onclick=()=>{ $('readselect').value=state.reads.indexOf(item.read);viewTo(original-25,55)};
-  out.append(tr)
+  const vals=[candidate.read.name,original,candidate.r+1,'WT + décalage de 4 nt',candidate.gain.toFixed(3),other.length?'Région proche sur l’autre lecture (±12 nt)':'Pas de région proche détectée'];
+  for(const val of vals){const td=document.createElement('td');td.textContent=val;tr.append(td)}
+  tr.onclick=()=>{$('readselect').value=state.reads.indexOf(candidate.read);viewTo(original-25,55)};
+  out.append(tr);
  }
- $('indelstatus').textContent=all.length?`${all.length} régions exploratoires classées par score de signal secondaire. Les scores ne sont pas calibrés et ne permettent PAS d'identifier ni de confirmer une délétion de 4 bases.`:'Aucune région évaluable : couverture ou alignement insuffisant.';
+ $('indelstatus').textContent=indelCandidates.length
+  ?`${indelCandidates.length} région(s) exploratoire(s) ; cliquez sur une ligne pour inspecter les pics. Le gain n’est ni une probabilité ni une preuve de délétion. La position est approximative et ne doit PAS être convertie directement en HGVS.`
+  :'Aucun candidat ne satisfait les filtres heuristiques. Cela n’exclut PAS une délétion : l’alignement et le basecalling peuvent être perturbés.';
+};
+$('exportindel').onclick=()=>{
+ const rows=[['lecture','base_ABI','reference_approximative_1based','gain_non_calibre','fraction_melange_modele_non_validee'],
+ ...indelCandidates.map(c=>[c.read.name,c.read.alignment.strand==='+'?c.q+1:c.read.bases.length-c.q,c.r+1,c.gain.toFixed(4),c.mix.toFixed(2)])];
+ const csv=rows.map(row=>row.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\r\n');
+ const url=URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}));
+ const link=document.createElement('a');link.href=url;link.download='SVIB_candidats_exploratoires.csv';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 };
