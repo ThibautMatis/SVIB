@@ -1,9 +1,11 @@
-# SVIB V6 — moteur JavaScript exploratoire, sans Tracy
+# SVIB V7 — prototype de recherche (non validé)
 
-Installation : déposer `index.html`, `style.css`, `app.js` et `v6-engine.js` à la racine du dépôt GitHub Pages. Ne pas publier les fichiers AB1. Recharger la page (Ctrl+F5), charger un transcrit NM_ puis importer F et R et cliquer « Lire et analyser localement », puis « Analyser F et R séparément ».
+Cette version remplace l'adaptateur Tracy incomplet et l'explorateur V6 par un ajustement indépendant de chaque chromatogramme ABI sur une référence NM_ (1 à 20 nt de décalage). Les quatre canaux sont analysés localement ; la référence publique est récupérée auprès de NCBI.
 
-Cette version remplace le pont Tracy inopérant par un moteur JavaScript exécutable localement. Chaque lecture est alignée séparément sur le NM_ puis le module explore des transitions et des décalages de 1–20 bases sur les quatre canaux. Les candidats restent des **régions exploratoires**, sans appel de variant ni reconstruction complète des deux haplotypes ; les nucléotides insérés ne sont pas identifiés. Une table vide ne permet pas d'exclure un variant. Ne pas utiliser pour le diagnostic.
+**Limites :** ce n'est PAS Tracy ni une déconvolution validée. Les séquences secondaires sont des estimations guidées par la référence, sans alignement allèle par allèle ni appel HGVS fiable. La recherche peut manquer des variants ou produire des artefacts. Ne pas utiliser pour le diagnostic. La duplication BRCA2 c.1813dup n'a pas été confirmée par ce moteur sur les ABI fournis.
 
-Contrôles réalisés : syntaxe JavaScript via `node --check`. Le moteur n'a pas été validé en navigateur ni sur les fichiers BRCA2 transmis. Aucun résultat HGVS ne doit être déduit des positions approximatives.
+## Installation
+Téléverser `index.html`, `app.js`, `style.css` et `v7-engine.js` à la racine de GitHub Pages, puis actualiser la page. Charger la référence, importer les ABI, cliquer « Lire et analyser localement » puis « Explorer les signaux F et R ». Les fichiers ABI ne sont pas envoyés à un serveur.
 
-Confidentialité : traitement des ABI en mémoire dans le navigateur. Les requêtes NCBI servent exclusivement au téléchargement des références publiques. Le logiciel ne téléverse pas les chromatogrammes ; vérifier néanmoins les politiques de sécurité et d'hébergement avant un usage clinique.
+## Vérification technique
+Syntaxe JS contrôlée avec `node --check`. Pas de test navigateur de bout en bout ni de validation de sensibilité/spécificité. Les résultats ne constituent pas des variants identifiés.
