@@ -44,7 +44,7 @@ function fasta(text){
 }
 function setReference(ref){
  if(!ref?.seq||!/^NM_\d+\.\d+$/.test(ref.accession))throw Error('Référence NM_ invalide');
- state.ref=ref;state.reads=[];state.rows=[];indelCandidates=[];$('readselect').replaceChildren();$('alignments').replaceChildren();$('variants').replaceChildren();$('indelrows').replaceChildren();$('indelstatus').textContent='Référence modifiée : relancez « Lire et analyser localement » avant la comparaison.';$('cdsstart').value=ref.cdsStart||'';
+ state.ref=ref;state.reads=[];state.rows=[];v5results=[];$('readselect').replaceChildren();$('alignments').replaceChildren();$('variants').replaceChildren();$('v5rows').replaceChildren();$('v5status').textContent='Référence modifiée : relancez « Lire et analyser localement » avant la comparaison.';$('cdsstart').value=ref.cdsStart||'';
  $('refstatus').textContent=`Référence chargée : ${ref.accession} · ${ref.seq.length} nt · CDS ${ref.cdsStart&&ref.cdsEnd?ref.cdsStart+'–'+ref.cdsEnd:'non documentée'} · source ${ref.source||'FASTA manuel'}. Relancez l’analyse ABI pour mettre à jour les alignements.`;
 }
 $('loadref').onclick=async()=>{try{const file=$('fasta').files[0],text=file?await file.text():$('refpaste').value;setReference(fasta(text))}catch(e){$('refstatus').textContent='Erreur : '+e.message}};
@@ -98,12 +98,12 @@ function cpos(refZero,cds){let x=refZero+1;if(!cds||cds<1)return 'non défini';l
 function callRows(read){let a=read.alignment,cds=Number($('cdsstart').value),rows=[];for(let k=0;k<a.cols.length;k++){let col=a.cols[k];if(col.q===null||col.r===null||col.base===col.ref||!/[ACGT]/.test(col.base)||!/[ACGT]/.test(col.ref))continue;
  let qOriginal=a.strand==='+'?col.q:a.length-1-col.q;let label=Number.isInteger(cds)&&cds>0&&state.ref?.cdsStart===cds&&col.r+1>=cds&&col.r+1<=state.ref.cdsEnd?`${state.ref.accession}:${cpos(col.r,cds)}${col.ref}>${col.base} (indicatif)`:'CDS non vérifiée / hors CDS';
  rows.push({name:read.name,q:qOriginal+1,r:col.r+1,ref:col.ref,alt:col.base,hgvs:label,read})}return rows}
-$('analyze').onclick=async()=>{state.reads=[];state.rows=[];indelCandidates=[];$('indelrows').replaceChildren();$('indelstatus').textContent='Analyse ABI en cours…';$('variants').replaceChildren();$('alignments').replaceChildren();$('readselect').replaceChildren();try{
+$('analyze').onclick=async()=>{state.reads=[];state.rows=[];v5results=[];$('v5rows').replaceChildren();$('v5status').textContent='Analyse ABI en cours…';$('variants').replaceChildren();$('alignments').replaceChildren();$('readselect').replaceChildren();try{
  for(let [id,name] of [['forward','Forward'],['reverse','Reverse']]){let f=$(id).files[0];if(!f)continue;let ab=parseABI(await f.arrayBuffer());let read={...ab,name:name+' · '+f.name};if(state.ref){read.alignment=chooseAlignment(ab.bases,state.ref.seq);state.rows.push(...callRows(read))}state.reads.push(read)}if(!state.reads.length)throw Error('Importez au moins un fichier ABI');
  for(let [i,r] of state.reads.entries()){let opt=document.createElement('option');opt.value=i;opt.textContent=r.name;$('readselect').append(opt);let p=document.createElement('p');p.textContent=`${r.name} — ${r.bases.length} bases${r.alignment?`, alignement ${r.alignment.strand} ; référence ${r.alignment.refStart+1}–${r.alignment.refEnd} ; score ${r.alignment.score}`:''}`;$('alignments').append(p)}
  for(let row of state.rows.slice(0,1000)){let tr=document.createElement('tr');for(let value of [row.name,row.q,row.r,row.ref,row.alt,row.hgvs]){let td=document.createElement('td');td.textContent=value;tr.append(td)}tr.onclick=()=>{let idx=state.reads.indexOf(row.read);$('readselect').value=idx;$('start').value=Math.max(1,row.q-20);draw()};$('variants').append(tr)}
- $('indelstatus').textContent='ABI chargés : vous pouvez lancer la comparaison exploratoire.'; $('status').textContent=`${state.reads.length} chromatogramme(s) lu(s) ; ${state.rows.length} discordance(s) simples indicatives. ${state.ref?'Référence présente.':'Aucune référence : visualisation uniquement.'}`;draw();
- }catch(e){$('status').textContent='Erreur : '+e.message;$('indelstatus').textContent='Comparaison indisponible : '+e.message;console.error('SVIB analyse ABI',e)}}
+ $('v5status').textContent='ABI chargés : vous pouvez lancer la comparaison exploratoire.'; $('status').textContent=`${state.reads.length} chromatogramme(s) lu(s) ; ${state.rows.length} discordance(s) simples indicatives. ${state.ref?'Référence présente.':'Aucune référence : visualisation uniquement.'}`;draw();
+ }catch(e){$('status').textContent='Erreur : '+e.message;$('v5status').textContent='Comparaison indisponible : '+e.message;console.error('SVIB analyse ABI',e)}}
 function draw(){let r=state.reads[Number($('readselect').value)||0];if(!r)return;let start=Math.max(0,Math.min(r.bases.length-5,(Number($('start').value)||1)-1)),count=Math.min(r.bases.length,Math.max(8,Number($('count').value)||45));let end=Math.min(r.bases.length,start+count);if(end<=start)return;
  let canvas=$('trace'),ctx=canvas.getContext('2d'),W=canvas.width,H=canvas.height;ctx.clearRect(0,0,W,H);let x0=Math.max(0,r.positions[start]-12),x1=Math.min(r.traces.A.length-1,r.positions[end-1]+12),span=Math.max(1,x1-x0);let ymax=1;for(let b of 'ACGT'){let t=r.traces[b];for(let i=x0;i<=x1;i++)if(t[i]>ymax)ymax=t[i]};let color={A:'#16854e',C:'#2166cc',G:'#252b32',T:'#d33a37'};ctx.lineWidth=1.5;
  for(let b of 'ACGT'){ctx.beginPath();ctx.strokeStyle=color[b];let t=r.traces[b];for(let i=x0;i<=x1;i++){let x=(i-x0)/span*W,y=H-45-t[i]/ymax*(H-80);if(i===x0)ctx.moveTo(x,y);else ctx.lineTo(x,y)}ctx.stroke()}
@@ -121,94 +121,96 @@ $('draw').onclick=draw;$('readselect').onchange=draw;$('trace').onclick=e=>{if(s
 $('export').onclick=()=>{let header=['lecture','position_ABI','position_reference_1based','reference','observe','HGVS_indicatif'];let esc=v=>'"'+String(v).replace(/"/g,'""')+'"';let data=[header,...state.rows.map(r=>[r.name,r.q,r.r,r.ref,r.alt,r.hgvs])].map(row=>row.map(esc).join(',')).join('\r\n');let blob=new Blob(['\ufeff'+data],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='sangervariant_discordances_indicatives.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
 
 
-// V4: heuristic 4-nt deletion signal comparison, entirely within the browser.
-// This is NOT validated variant calling: local alignment can be wrong after a heterozygous indel.
-const BASES='ACGT';
-function peakFractions(read, orientedQ){
- const a=read.alignment,original=a.strand==='+'?orientedQ:a.length-1-orientedQ;
- const pos=read.positions[original];if(!Number.isInteger(pos)||pos<0||pos>=read.traces.A.length)return null;
- const values=BASES.map(b=>Math.max(0,read.traces[b][pos]||0));
- const total=values.reduce((x,y)=>x+y,0);if(total<20)return null;
- return values.map(v=>v/total);
+
+// V5: reference-guided two-allele signal fitting. Original implementation, no Tracy code.
+// Candidate hypotheses are NOT diagnostic calls or complete de novo haplotype reconstruction.
+const DNA='ACGT';let v5results=[];
+function intensity(read,k){
+ if(k<0||k>=read.positions.length)return null;
+ const p=read.positions[k],v=DNA.split('').map(b=>Math.max(0,read.traces[b][p]||0));
+ const sum=v.reduce((a,b)=>a+b,0);return sum<25?null:v.map(x=>x/sum);
 }
-function baseChannel(base,strand){return BASES.indexOf(strand==='+'?base:rc(base))}
-function expectedError(observed,wt,deleted,strand,mix){
- const i=baseChannel(wt,strand),j=baseChannel(deleted,strand);
- if(i<0||j<0)return null;
- // Compare relative peak proportions, allowing a small background at other channels.
- const exp=[.025,.025,.025,.025];
- exp[i]+=.9*(1-mix);exp[j]+=.9*mix;
- return exp.reduce((sum,e,k)=>sum+(observed[k]-e)**2,0);
+function fit(obs,a,b,f){
+ const ia=DNA.indexOf(a),ib=DNA.indexOf(b);if(ia<0||ib<0)return null;
+ const pred=[.025,.025,.025,.025];pred[ia]+=.9*(1-f);pred[ib]+=.9*f;
+ return pred.reduce((x,v,i)=>x+(v-obs[i])**2,0);
 }
-function modelAt(read,breakQ,breakR){
- const a=read.alignment,ref=state.ref.seq;
- if(breakQ<16||breakQ+24>=a.length||breakR<16||breakR+28>=ref.length)return null;
- let preWt=0,preMixed=0,postWt=0,postBest=Infinity,postN=0,preN=0,bestMix=null;
- const post=[];
- for(let d=-12;d<=23;d++){
-  if(d>=-1&&d<=1)continue; // transition/phase uncertainty
-  const q=breakQ+d,r=breakR+d,observed=peakFractions(read,q);
-  if(!observed||!BASES.includes(ref[r])||!BASES.includes(ref[r+4]))continue;
-  const wt=expectedError(observed,ref[r],ref[r],a.strand,0);
-  if(d<0){preWt+=wt;preMixed+=expectedError(observed,ref[r],ref[r+4],a.strand,.5);preN++}
-  else {post.push({observed,wt:ref[r],del:ref[r+4]});postWt+=wt;postN++}
+// Alignment anchors in original acquisition order, with strand-specific reference bases.
+function anchors(read){
+ const al=read.alignment,reverse=al.strand==='-';let map=new Map();
+ for(const col of al.cols)if(col.q!==null&&col.r!==null)map.set(reverse?read.bases.length-1-col.q:col.q,col.r);
+ return map;
+}
+function orientedBase(ref,r,strand){return r>=0&&r<ref.length?(strand===1?ref[r]:rc(ref[r])):'N'}
+function evaluate(read,k,r,kind,len,window=23){
+ const ref=state.ref.seq,strand=read.alignment.strand==='+'?1:-1;
+ // A positive shift in acquisition direction models deletion; negative models insertion.
+ // For an insertion the inserted bases are inferred from post-transition peaks, not assumed from reference.
+ const delta=kind==='del'?len:-len;
+ let pre0=0,preN=0,post0=0,postN=0,valid=0,best=null;
+ for(let d=-12;d<=-3;d++){
+  const obs=intensity(read,k+d),wt=orientedBase(ref,r+strand*d,strand);
+  if(!obs||wt==='N')continue;pre0+=fit(obs,wt,wt,0);preN++;
  }
- if(preN<7||postN<12)return null;
- for(let mix=.15;mix<=.851;mix+=.05){
-  const error=post.reduce((sum,p)=>sum+expectedError(p.observed,p.wt,p.del,a.strand,mix),0);
-  if(error<postBest){postBest=error;bestMix=mix}
+ if(preN<7)return null;
+ const points=[];
+ for(let d=3;d<=window;d++){
+  const obs=intensity(read,k+d),wt=orientedBase(ref,r+strand*d,strand);
+  let alt=orientedBase(ref,r+strand*(d+delta),strand);
+  if(!obs||wt==='N'||alt==='N')continue;
+  // Insertions: first inserted segment cannot be reconstructed from reference; omit it here.
+  if(kind==='ins'&&d<=len+2)continue;
+  points.push({obs,wt,alt});post0+=fit(obs,wt,wt,0);postN++;
  }
- const gain=(postWt-postBest)/postN;
- const preError=preWt/preN;
- // Require improved fit after breakpoint, not merely globally noisy data.
- if(gain<.025||postBest/postN>=postWt/postN*.82||preError>.40)return null;
- return {gain,preError,postError:postBest/postN,mix:bestMix,preN,postN};
+ if(postN<9)return null;
+ for(let f=.2;f<=.801;f+=.05){
+  let loss=0;for(const point of points)loss+=fit(point.obs,point.wt,point.alt,f);
+  if(!best||loss<best.loss)best={loss,f};
+ }
+ const improvement=(post0-best.loss)/postN,preError=pre0/preN,postError=best.loss/postN;
+ // Reconstruct a local reference-guided sequence; unknown inserted bases are explicitly N.
+ const before=Array.from({length:12},(_,i)=>orientedBase(ref,r+strand*(i-12),strand)).join('');
+ const after=Array.from({length:25},(_,i)=>orientedBase(ref,r+strand*(i+delta),strand)).join('');
+ const allele1=before+Array.from({length:25},(_,i)=>orientedBase(ref,r+strand*i,strand)).join('');
+ const allele2=before+(kind==='ins'?'N'.repeat(len):'')+after;
+ return {read,k,r,kind,len,improvement,preError,postError,f:best.f,postN,allele1,allele2};
 }
-let indelCandidates=[];
-$('scanindel').onclick=()=>{
- const out=$('indelrows');out.replaceChildren();indelCandidates=[];
- if(!state.ref){$('indelstatus').textContent='Chargez d’abord un transcrit RefSeq.';return}
- if(!state.reads.length){$('indelstatus').textContent='Importez vos fichiers ABI puis cliquez sur « Lire et analyser localement ».';return}
- if(state.reads.some(r=>!r.alignment)){ $('indelstatus').textContent='Alignements absents : relancez « Lire et analyser localement » après avoir chargé la référence.';return}
- $('indelstatus').textContent='Comparaison exploratoire en cours…';
- try{
+function addV5row(c){
+ const tr=document.createElement('tr');
+ for(const value of [c.read.name,c.k+1,c.r+1,c.kind==='del'?`Délétion ${c.len} nt`:`Insertion ${c.len} nt`,c.improvement.toFixed(3),c.f.toFixed(2)]){
+  const td=document.createElement('td');td.textContent=value;tr.append(td);
+ }
+ tr.onclick=()=>{ $('readselect').value=state.reads.indexOf(c.read);viewTo(c.k-22,55);
+  $('v5alleles').textContent=`Hypothèse ${c.kind} ${c.len} nt · lecture ${c.read.name} · orientation d’acquisition\nAllèle 1 (guidé par référence) : ${c.allele1}\nAllèle 2 (modèle) :            ${c.allele2}\n${c.kind==='ins'?'N = bases insérées inconnues : le modèle ne les détermine pas.\n':''}Coordonnées approximatives ; reconstruction partielle, non confirmée.`;
+ };$('v5rows').append(tr);
+}
+$('v5scan').onclick=()=>{
+ const status=$('v5status');$('v5rows').replaceChildren();$('v5alleles').textContent='';v5results=[];
+ if(!state.ref||!state.reads.length||state.reads.some(x=>!x.alignment)){status.textContent='Chargez le NM_, puis cliquez sur « Lire et analyser localement ».';return}
+ status.textContent='Évaluation des modèles bi-alléliques en cours…';
+ // Yield to the UI; all patient-derived data remain in this tab.
+ setTimeout(()=>{try{
  for(const read of state.reads){
-  const a=read.alignment;if(!a)continue;
-  const map=new Map(a.cols.filter(c=>c.q!==null&&c.r!==null).map(c=>[c.q,c.r]));
-  const scored=[];
-  for(let q=Math.max(a.start+16,16);q<Math.min(a.end-27,a.length-27);q+=2){
-   const r=map.get(q);if(r===undefined)continue;
-   // Require a well-aligned pre-break anchor (not an arbitrary post-indel offset).
-   let anchor=0;for(let d=-9;d<=-2;d++)if(map.get(q+d)===r+d)anchor++;
-   if(anchor<5)continue;
-   const model=modelAt(read,q,r);if(model)scored.push({read,q,r,...model});
+  const map=anchors(read),strand=read.alignment.strand==='+'?1:-1,ranked=[];
+  for(let k=17;k<read.bases.length-35;k+=2){
+   const r=map.get(k);if(r===undefined)continue;
+   let matched=0;for(let d=-9;d<=-2;d++)if(map.get(k+d)===r+strand*d)matched++;
+   if(matched<5)continue;
+   for(let len=1;len<=12;len++)for(const kind of ['del','ins']){
+    const candidate=evaluate(read,k,r,kind,len);
+    if(candidate&&candidate.improvement>0&&candidate.preError<.38)ranked.push(candidate);
+   }
   }
-  scored.sort((x,y)=>y.gain-x.gain);
-  const chosen=[];
-  for(const candidate of scored){
-   if(chosen.every(c=>Math.abs(c.r-candidate.r)>12)){chosen.push(candidate);if(chosen.length>=6)break}
-  }
-  indelCandidates.push(...chosen);
+  ranked.sort((a,b)=>b.improvement-a.improvement);
+  const selected=[];for(const c of ranked){if(selected.every(x=>Math.abs(x.k-c.k)>14))selected.push(c);if(selected.length>=8)break}
+  v5results.push(...selected);
  }
- indelCandidates.sort((x,y)=>y.gain-x.gain);
- for(const candidate of indelCandidates){
-  const other=indelCandidates.filter(c=>c.read!==candidate.read&&Math.abs(c.r-candidate.r)<=12);
-  const original=candidate.read.alignment.strand==='+'?candidate.q+1:candidate.read.bases.length-candidate.q;
-  const tr=document.createElement('tr');
-  const vals=[candidate.read.name,original,candidate.r+1,'WT + décalage de 4 nt',candidate.gain.toFixed(3),other.length?'Région proche sur l’autre lecture (±12 nt)':'Pas de région proche détectée'];
-  for(const val of vals){const td=document.createElement('td');td.textContent=val;tr.append(td)}
-  tr.onclick=()=>{$('readselect').value=state.reads.indexOf(candidate.read);viewTo(original-25,55)};
-  out.append(tr);
- }
- $('indelstatus').textContent=indelCandidates.length
-  ?`${indelCandidates.length} région(s) exploratoire(s) ; cliquez sur une ligne pour inspecter les pics. Le gain n’est ni une probabilité ni une preuve de délétion. La position est approximative et ne doit PAS être convertie directement en HGVS.`
-  :'Aucun candidat ne satisfait les filtres heuristiques. Cela n’exclut PAS une délétion : l’alignement et le basecalling peuvent être perturbés.';
- }catch(e){$('indelstatus').textContent='Erreur lors de la comparaison : '+e.message;console.error('SVIB comparaison',e)}
+ v5results.sort((a,b)=>b.improvement-a.improvement);v5results.forEach(addV5row);
+ status.textContent=v5results.length?`${v5results.length} hypothèse(s) de mélange retenue(s) (1–12 nt). Cliquez sur une ligne pour afficher les séquences modélisées. Le score n’est pas une probabilité, et le type/les coordonnées ne sont PAS confirmés.`:'Aucune hypothèse ne présente de gain positif avec les filtres de qualité actuels. Cela n’exclut pas un variant.';
+ }catch(e){status.textContent='Erreur du moteur V5 : '+e.message;console.error(e)}},20);
 };
-$('exportindel').onclick=()=>{
- const rows=[['lecture','base_ABI','reference_approximative_1based','gain_non_calibre','fraction_melange_modele_non_validee'],
- ...indelCandidates.map(c=>[c.read.name,c.read.alignment.strand==='+'?c.q+1:c.read.bases.length-c.q,c.r+1,c.gain.toFixed(4),c.mix.toFixed(2)])];
+$('v5export').onclick=()=>{
+ const rows=[['lecture','base_ABI','reference_approximative','hypothese','taille_nt','gain_non_calibre','fraction_modele','allele_reference_modele','allele_alternatif_modele'],...v5results.map(c=>[c.read.name,c.k+1,c.r+1,c.kind,c.len,c.improvement.toFixed(4),c.f.toFixed(2),c.allele1,c.allele2])];
  const csv=rows.map(row=>row.map(v=>'"'+String(v).replace(/"/g,'""')+'"').join(',')).join('\r\n');
- const url=URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'}));
- const link=document.createElement('a');link.href=url;link.download='SVIB_candidats_exploratoires.csv';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+ const url=URL.createObjectURL(new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'})),link=document.createElement('a');link.href=url;link.download='SVIB_V5_hypotheses_non_validees.csv';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
 };
