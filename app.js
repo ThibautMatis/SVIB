@@ -1,7 +1,7 @@
 'use strict';
 // ABIF v1 parser: no network, no external dependencies. Untrusted inputs are bounds-checked.
 const $=id=>document.getElementById(id);
-const state={ref:null,reads:[],rows:[],view:null};
+const state={ref:null,reads:[],rows:[],view:null,drag:null};
 const rc=s=>s.split('').reverse().map(x=>({A:'T',T:'A',C:'G',G:'C',R:'Y',Y:'R',M:'K',K:'M',S:'S',W:'W',N:'N'}[x]||'N')).join('');
 const valid=s=>/^[ACGTNRYKMSWBDHV]+$/.test(s);
 function parseABI(buffer){
@@ -23,6 +23,16 @@ function parseABI(buffer){
 }
 function fasta(text){let lines=text.trim().split(/\r?\n/);let header=lines.find(x=>x.startsWith('>'))||'';let seq=lines.filter(x=>!x.startsWith('>')).join('').replace(/\s/g,'').toUpperCase().replace(/U/g,'T');if(!seq||!/^[ACGTN]+$/.test(seq))throw Error('FASTA invalide (séquence ADN attendue)');if(!header.includes('NM_000059.4'))throw Error('En-tête FASTA : NM_000059.4 attendu. Vérifiez la version de référence.');return {seq,header}}
 $('loadref').onclick=async()=>{try{let file=$('fasta').files[0];let text=file?await file.text():$('refpaste').value;state.ref=fasta(text);$('refstatus').textContent=`Référence chargée : ${state.ref.header}\n${state.ref.seq.length} nucléotides.`}catch(e){state.ref=null;$('refstatus').textContent='Erreur : '+e.message}};
+// Référence statique servie par GitHub Pages : seuls les octets publics du FASTA sont téléchargés.
+// Aucun chromatogramme n'est transmis au serveur.
+(async function autoReference(){try{
+ const response=await fetch('./BRCA2_NM_000059.4.fasta',{cache:'no-store'});
+ if(!response.ok)throw Error('Fichier de référence absent du dépôt (HTTP '+response.status+')');
+ const loaded=fasta(await response.text());
+ if(loaded.seq.length!==11954)throw Error('Longueur inattendue : '+loaded.seq.length+' (11954 attendus)');
+ state.ref=loaded; $('refstatus').textContent='Référence BRCA2 NM_000059.4 intégrée : '+loaded.seq.length+' nucléotides. Aucune donnée patient envoyée.';
+ }catch(e){$('refstatus').textContent='Référence intégrée indisponible : '+e.message+' — chargez votre FASTA manuellement.'}
+})();
 // Banded-free Smith-Waterman local alignment with traceback. Limit read/reference size to bound runtime.
 function align(read,ref){const n=read.length,m=ref.length;if(n>3000||m>25000)throw Error('Référence/lecture trop longue pour cet alignement de démonstration');
  let w=m+1,H=new Int32Array((n+1)*w),T=new Uint8Array(H.length),best=0,bi=0,bj=0;
@@ -39,9 +49,80 @@ $('analyze').onclick=async()=>{state.reads=[];state.rows=[];$('variants').replac
  for(let row of state.rows.slice(0,1000)){let tr=document.createElement('tr');for(let value of [row.name,row.q,row.r,row.ref,row.alt,row.hgvs]){let td=document.createElement('td');td.textContent=value;tr.append(td)}tr.onclick=()=>{let idx=state.reads.indexOf(row.read);$('readselect').value=idx;$('start').value=Math.max(1,row.q-20);draw()};$('variants').append(tr)}
  $('status').textContent=`${state.reads.length} chromatogramme(s) lu(s) ; ${state.rows.length} discordance(s) simples indicatives. ${state.ref?'Référence présente.':'Aucune référence : visualisation uniquement.'}`;draw();
  }catch(e){$('status').textContent='Erreur : '+e.message}}
-function draw(){let r=state.reads[Number($('readselect').value)||0];if(!r)return;let start=Math.max(0,(Number($('start').value)||1)-1),count=Math.min(120,Math.max(10,Number($('count').value)||45));let end=Math.min(r.bases.length,start+count);if(end<=start)return;
+function draw(){let r=state.reads[Number($('readselect').value)||0];if(!r)return;let start=Math.max(0,Math.min(r.bases.length-5,(Number($('start').value)||1)-1)),count=Math.min(r.bases.length,Math.max(8,Number($('count').value)||45));let end=Math.min(r.bases.length,start+count);if(end<=start)return;
  let canvas=$('trace'),ctx=canvas.getContext('2d'),W=canvas.width,H=canvas.height;ctx.clearRect(0,0,W,H);let x0=Math.max(0,r.positions[start]-12),x1=Math.min(r.traces.A.length-1,r.positions[end-1]+12),span=Math.max(1,x1-x0);let ymax=1;for(let b of 'ACGT'){let t=r.traces[b];for(let i=x0;i<=x1;i++)if(t[i]>ymax)ymax=t[i]};let color={A:'#16854e',C:'#2166cc',G:'#252b32',T:'#d33a37'};ctx.lineWidth=1.5;
  for(let b of 'ACGT'){ctx.beginPath();ctx.strokeStyle=color[b];let t=r.traces[b];for(let i=x0;i<=x1;i++){let x=(i-x0)/span*W,y=H-45-t[i]/ymax*(H-80);if(i===x0)ctx.moveTo(x,y);else ctx.lineTo(x,y)}ctx.stroke()}
  ctx.font='13px Segoe UI';ctx.textAlign='center';for(let k=start;k<end;k++){let x=(r.positions[k]-x0)/span*W;ctx.fillStyle=color[r.bases[k]]||'#8c60a7';ctx.fillText(r.bases[k],x,H-22);if(k%5===0){ctx.fillStyle='#647587';ctx.font='10px Segoe UI';ctx.fillText(String(k+1),x,H-6);ctx.font='13px Segoe UI'}}state.view={r,x0,x1,start,end};$('baseinfo').textContent=`${r.name} · bases ${start+1}–${end} · cliquer sur un pic pour afficher sa position.`}
-$('draw').onclick=draw;$('readselect').onchange=draw;$('trace').onclick=e=>{let v=state.view;if(!v)return;let rect=$('trace').getBoundingClientRect(),sample=v.x0+(e.clientX-rect.left)/rect.width*(v.x1-v.x0),k=v.start;for(let i=v.start;i<v.end;i++)if(Math.abs(v.r.positions[i]-sample)<Math.abs(v.r.positions[k]-sample))k=i;let a=v.r.alignment,ref='non alignée';if(a){let q=a.strand==='+'?k:a.length-1-k;let c=a.cols.find(c=>c.q===q&&c.r!==null);if(c)ref=`référence ${c.r+1} ; ${cpos(c.r,Number($('cdsstart').value))}`} $('baseinfo').textContent=`${v.r.name} · base ABI ${k+1} : ${v.r.bases[k]} · ${ref}`};
+function viewTo(start,count){let r=state.reads[Number($('readselect').value)||0];if(!r)return;count=Math.max(8,Math.min(r.bases.length,Math.round(count)));start=Math.max(1,Math.min(r.bases.length-count+1,Math.round(start)));$('start').value=start;$('count').value=count;draw()}
+$('zoomout').onclick=()=>viewTo(Number($('start').value)-Number($('count').value)*.25,Number($('count').value)*1.5);
+$('resetview').onclick=()=>{let r=state.reads[Number($('readselect').value)||0];if(r)viewTo(1,r.bases.length)};
+const trace=$('trace');
+trace.addEventListener('pointerdown',e=>{if(!state.view)return;state.drag={x:e.clientX,start:Number($('start').value),moved:false};trace.setPointerCapture(e.pointerId);trace.style.cursor='grabbing'});
+trace.addEventListener('pointermove',e=>{if(!state.drag)return;let dx=e.clientX-state.drag.x;if(Math.abs(dx)>3)state.drag.moved=true;if(!state.drag.moved)return;let count=Number($('count').value),rect=trace.getBoundingClientRect();viewTo(state.drag.start-Math.round(dx/rect.width*count),count)});
+trace.addEventListener('pointerup',()=>{trace.style.cursor='grab';if(state.drag){state.suppressClick=state.drag.moved;state.drag=null;setTimeout(()=>state.suppressClick=false,80)}});
+trace.addEventListener('dblclick',e=>{e.preventDefault();let v=state.view;if(!v)return;let rect=trace.getBoundingClientRect(),fraction=(e.clientX-rect.left)/rect.width,count=Number($('count').value),next=Math.max(8,Math.round(count/2));viewTo(Number($('start').value)+Math.round(fraction*(count-next)),next)});
+trace.addEventListener('wheel',e=>{e.preventDefault();let v=state.view;if(!v)return;let rect=trace.getBoundingClientRect(),fraction=(e.clientX-rect.left)/rect.width,count=Number($('count').value),next=Math.round(count*(e.deltaY<0?.8:1.25));viewTo(Number($('start').value)+Math.round(fraction*(count-next)),next)},{passive:false});
+$('draw').onclick=draw;$('readselect').onchange=draw;$('trace').onclick=e=>{if(state.suppressClick)return;let v=state.view;if(!v)return;let rect=$('trace').getBoundingClientRect(),sample=v.x0+(e.clientX-rect.left)/rect.width*(v.x1-v.x0),k=v.start;for(let i=v.start;i<v.end;i++)if(Math.abs(v.r.positions[i]-sample)<Math.abs(v.r.positions[k]-sample))k=i;let a=v.r.alignment,ref='non alignée';if(a){let q=a.strand==='+'?k:a.length-1-k;let c=a.cols.find(c=>c.q===q&&c.r!==null);if(c)ref=`référence ${c.r+1} ; ${cpos(c.r,Number($('cdsstart').value))}`} $('baseinfo').textContent=`${v.r.name} · base ABI ${k+1} : ${v.r.bases[k]} · ${ref}`};
 $('export').onclick=()=>{let header=['lecture','position_ABI','position_reference_1based','reference','observe','HGVS_indicatif'];let esc=v=>'"'+String(v).replace(/"/g,'""')+'"';let data=[header,...state.rows.map(r=>[r.name,r.q,r.r,r.ref,r.alt,r.hgvs])].map(row=>row.map(esc).join(',')).join('\r\n');let blob=new Blob(['\ufeff'+data],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='sangervariant_discordances_indicatives.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
+
+// Score heuristique : recherche d'une augmentation des signaux secondaires compatibles
+// avec une superposition de la référence WT et d'une référence décalée de 4 bases.
+// Le score ne constitue pas une probabilité, un génotype ou une validation d'indel.
+function candidateScore(read,breakQ,shift){
+ const a=read.alignment,ref=state.ref.seq,points=[];
+ const qmap=new Map(a.cols.filter(c=>c.q!==null&&c.r!==null).map(c=>[c.q,c.r]));
+ for(let q=breakQ+2;q<Math.min(breakQ+28,a.oriented.length-2);q++){
+   const r=qmap.get(q);if(r===undefined||r+shift<0||r+shift>=ref.length)continue;
+   const original=a.strand==='+'?q:a.length-1-q;
+   const pos=read.positions[original];if(!Number.isInteger(pos)||pos<0)continue;
+   const observed={};let total=0;
+   for(let base of 'ACGT'){
+     const v=read.traces[base][pos]||0;observed[base]=v;total+=v;
+   }
+   if(total<=0)continue;
+   const wt=ref[r],del=ref[r+shift];if(!'ACGT'.includes(wt)||!'ACGT'.includes(del)||wt===del)continue;
+   const expected=a.strand==='+'?del:rc(del);
+   const normal=a.strand==='+'?wt:rc(wt);
+   const mixed=observed[expected]/total;
+   const primary=observed[normal]/total;
+   points.push({mixed,primary});
+ }
+ if(points.length<8)return null;
+ return {score:points.reduce((s,x)=>s+x.mixed,0)/points.length,
+   primary:points.reduce((s,x)=>s+x.primary,0)/points.length,n:points.length};
+}
+$('scanindel').onclick=()=>{
+ const out=$('indelrows');out.replaceChildren();
+ if(!state.ref){$('indelstatus').textContent='Chargez la référence BRCA2 avant la recherche.';return}
+ let all=[];
+ for(const read of state.reads){
+  const a=read.alignment;if(!a)continue;
+  const candidates=[];
+  for(let q=Math.max(a.start+12,15);q<Math.min(a.end-32,a.length-32);q+=2){
+   const r=a.cols.find(c=>c.q===q&&c.r!==null)?.r;
+   if(r===undefined)continue;
+   // Les deux sens sont évalués : un indel hétérozygote peut être ambigu
+   // en présence de pics mixtes et d'un alignement déjà dégradé.
+   for(const shift of [-4,4]){
+    const result=candidateScore(read,q,shift);
+    if(result)candidates.push({read,q,r,shift,...result});
+   }
+  }
+  candidates.sort((x,y)=>y.score-x.score);
+  // Regrouper les maxima proches : ne pas afficher dix positions contiguës.
+  let chosen=[];
+  for(const item of candidates){if(chosen.every(x=>Math.abs(x.q-item.q)>14)){chosen.push(item);if(chosen.length>=5)break}}
+  all.push(...chosen);
+ }
+ all.sort((x,y)=>y.score-x.score);
+ for(const item of all){
+  const tr=document.createElement('tr');
+  const original=item.read.alignment.strand==='+'?item.q+1:item.read.bases.length-item.q;
+  for(const val of [item.read.name,original,item.r+1,'Décalage '+(item.shift>0?'+':'')+item.shift+' bases (hypothèse)',item.score.toFixed(3)+' (n='+item.n+')']){
+   const td=document.createElement('td');td.textContent=val;tr.append(td)
+  }
+  tr.onclick=()=>{ $('readselect').value=state.reads.indexOf(item.read);viewTo(original-25,55)};
+  out.append(tr)
+ }
+ $('indelstatus').textContent=all.length?`${all.length} régions exploratoires classées par score de signal secondaire. Les scores ne sont pas calibrés et ne permettent PAS d'identifier ni de confirmer une délétion de 4 bases.`:'Aucune région évaluable : couverture ou alignement insuffisant.';
+};
